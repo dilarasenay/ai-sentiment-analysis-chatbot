@@ -1,88 +1,99 @@
 import pandas as pd
 import re
 from collections import Counter
-import os   
+import os
 
-#CSV dosyasını okutuyoruz
-base_dir = os.path.dirname(os.path.abspath(__file__))
-data_path = os.path.join(base_dir, "../../data/raw/food_reviews.csv")
-df= pd.read_csv(data_path)
 
-#Stopword'leri tanımlayarak yorumlardan temizliyoruz
-stopwords = set(["ve", "veya", "ile", "için", "çünkü", "ama", "fakat", "lakin", "da", "de", "mi", "mu"])
+# ⚠️ "ama/fakat/lakin" stopword OLMASIN: bağlaç kuralı için lazım olabilir
+STOPWORDS = set([
+    "ve", "veya", "ile", "için", "çünkü",
+    "da", "de", "mi", "mu"
+])
 
-#Fonksiyon tanımlayarak yorumları temizliyoruz
+# İstersen bigram üretimini buradan aç/kapa
+GENERATE_BIGRAMS = True
+
+
 def clean_text(text):
-    #Yorumları küçük harfe çeviriyoruz
-    text = text.replace('I', 'ı') #Türkçe karakterler için düzeltme yapıyoruz
-    text = text.replace('İ', 'i')
-    text = text.lower() 
+    text = str(text)
 
-    #Yorumlardaki tekrar eden harfleri temizliyoruz
-    text = re.sub(r'(.)\1+', r'\1\1', text)
+    # Türkçe I/İ normalizasyonu
+    text = text.replace("I", "ı").replace("İ", "i").lower()
 
-    #Gürültü karakterlerini temizliyoruz
-    text = re.sub(r'[^a-zçğıöşü\s]', ' ', text)
+    # uzayan harfleri kısalt (çooooook -> çook)
+    text = re.sub(r"(.)\1+", r"\1\1", text)
 
-    #Çok boşluk kaldı onları tek boşluk yapıyoruz
-    text = text.strip() 
+    # harf dışı karakterleri boşluğa çevir (Türkçe karakterler dahil)
+    text = re.sub(r"[^a-zçğıöşü\s]", " ", text)
 
-    #Metni kelime listesine çeviriyoruz
-    text = text.split()
+    # fazla boşlukları toparla
+    text = re.sub(r"\s+", " ", text).strip()
 
-    #Stopword'leri temizliyoruz
-    text = [word for word in text if word not in stopwords]
+    tokens = text.split()
+    tokens = [w for w in tokens if w not in STOPWORDS]
 
-    #Kelimelerin Bigram olması gerekiyor
-    #Bigramların listesini oluşturuyoruz
-    ikili_kelimeler = []
-    #Yorumdaki kelimeleri bigramlara çeviriyoruz
-    for i in range(len(text) - 1):
-        ikili = text[i] + "_" + text[i+1]
-        ikili_kelimeler.append(ikili)
+    if GENERATE_BIGRAMS and len(tokens) >= 2:
+        bigrams = [f"{tokens[i]}_{tokens[i+1]}" for i in range(len(tokens) - 1)]
+        return tokens + bigrams
 
-    text = text + ikili_kelimeler
-
-    return text
-
-#Yorumları temizleyerek yeni bir sütun oluşturuyoruz
-df['Cleaned_Sentence'] = df['Sentence'].apply(clean_text)
+    return tokens
 
 
+def preprocess_text(text: str):
+    """Classifier'ın kullanacağı: text -> token list"""
+    return clean_text(text)
 
 
-#Burayla Isı Haritası yapabiliriz.
-#Hangi kelimeden kaç tane olduğunu sayarak bir sözlük oluşturuyoruz
-tum_kelimeler = []
-for liste in df['Cleaned_Sentence']:
-    tum_kelimeler.extend(liste)
+def main():
+    # CSV dosyasını okutuyoruz
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    data_path = os.path.join(base_dir, "../../data/raw/food_reviews.csv")
+    df = pd.read_csv(data_path)
 
-#En çok geçen 50 kelime
-kelime_sayici = Counter(tum_kelimeler)
-en_cok_gecenler = kelime_sayici.most_common(50)
-#Kontrol
-for kelime, sayi in en_cok_gecenler:
-    print(f"{kelime}: {sayi}")
+    # Yorumları temizleyerek yeni bir sütun oluşturuyoruz
+    df["Cleaned_Sentence"] = df["Sentence"].apply(clean_text)
+
+    # En çok geçen 50 token (opsiyonel analiz)
+    tum_kelimeler = []
+    for lst in df["Cleaned_Sentence"]:
+        tum_kelimeler.extend(lst)
+
+    kelime_sayici = Counter(tum_kelimeler)
+    en_cok_gecenler = kelime_sayici.most_common(50)
+
+    print("\n--- En çok geçen 50 token ---")
+    for kelime, sayi in en_cok_gecenler:
+        print(f"{kelime}: {sayi}")
+
+    # Aspect analizi (Aspect kolonu varsa)
+    if "Aspect" in df.columns:
+        aspect_analizi = {}
+        unique_aspectler = df["Aspect"].dropna().unique()
+
+        for aspect in unique_aspectler:
+            aspect_kelimeleri = []
+            aspect_df = df[df["Aspect"] == aspect]
+
+            for lst in aspect_df["Cleaned_Sentence"]:
+                aspect_kelimeleri.extend(lst)
+
+            aspect_sayici = Counter(aspect_kelimeleri)
+            aspect_analizi[aspect] = aspect_sayici.most_common(15)
+
+        print("\n--- Aspect analizi (ilk 3 aspect) ---")
+        for k in list(aspect_analizi.keys())[:3]:
+            print(k, "->", aspect_analizi[k])
+
+    print("\n--- Örnek (ilk 5 satır) ---")
+    print(df[["Sentence", "Cleaned_Sentence"]].head())
+
+    # Kaydetme
+    df["Final_Cleaned_Text"] = df["Cleaned_Sentence"].apply(lambda x: " ".join(x))
+    output_path = os.path.join(base_dir, "../../data/processed/cleaned_food_reviews.csv")
+    df.to_csv(output_path, index=False)
+
+    print(f"\n✅ Temizlenmiş veri kaydedildi: {output_path}")
 
 
-#Aspect Analizi
-aspect_analizi = {}
-unique_aspectler = df['Aspect'].unique()
-
-for aspect in unique_aspectler:
-    aspect_kelimeleri = []
-    aspect_df = df[df['Aspect'] == aspect]
-    
-    for liste in aspect_df['Cleaned_Sentence']:
-        aspect_kelimeleri.extend(liste)
-    
-    aspect_sayici = Counter(aspect_kelimeleri)
-    aspect_analizi[aspect] = aspect_sayici.most_common(15)
-
-
-
-print(df[['Sentence', 'Cleaned_Sentence']].head())
-
-df['Final_Cleaned_Text'] = df['Cleaned_Sentence'].apply(lambda x: " ".join(x))
-output_path = os.path.join(base_dir, "../../data/processed/cleaned_food_reviews.csv")
-df.to_csv(output_path, index=False)
+if __name__ == "__main__":
+    main()
