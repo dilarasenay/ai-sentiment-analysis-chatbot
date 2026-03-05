@@ -39,10 +39,6 @@ def clean_text(text):
     return tokens
 
 
-def preprocess_text(text: str):
-    """Classifier'ın kullanacağı: text -> token list"""
-    return clean_text(text)
-
 
 def main():
     # CSV dosyasını okutuyoruz
@@ -94,6 +90,16 @@ def main():
 
     print(f"\n✅ Temizlenmiş veri kaydedildi: {output_path}")
 
+def preprocess_text(text: str):
+    """Classifier'ın kullanacağı: text -> token list"""
+    return clean_text(text)
+
+def strip_suffix(word):
+    suffixes = ["ydi","ydı","ydü","ydu","di","dı","dü","du","ti","tı","tu","tü"]
+    for s in suffixes:
+        if word.endswith(s) and len(word) > len(s) + 2:
+            return word[:-len(s)]
+    return word
 
 if __name__ == "__main__":
     main()
