@@ -62,3 +62,4 @@ hiç_beğenmedim,-5,bigram_negative
 iyi_değil,-4,bigram_negative
 kötü_değil,2,bigram_positive
 fena_değil,2,bigram_positive
+güzel_değil,-3,bigram_negative 
