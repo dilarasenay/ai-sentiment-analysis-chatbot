@@ -13,3 +13,6 @@ scikit-learn
 
 # Testing
 pytest
+
+# CORS
+flask-cors
