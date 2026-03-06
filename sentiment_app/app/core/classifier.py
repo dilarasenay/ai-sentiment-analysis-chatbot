@@ -9,7 +9,7 @@ from .lexicon import load_lexicon
 import google.generativeai as genai
 
 # API anahtarını buraya giriyorsun
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
+GEMINI_API_KEY = "YOUR_API_KEY"
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Hızlı ve ucuz olan flash modelini seçiyoruz
@@ -54,12 +54,15 @@ def norm(tok: str) -> str:
     return tok
 
 
+# Negation / emphasis words
 DEGIL_WORDS = {norm("değil"), norm("degil")}
 HIC_ASLA_WORDS = {norm("hiç"), norm("hic"), norm("asla")}
 
+# "ama" bağlaçları (stopword değil!)
 BUT_WORDS = {norm("ama"), norm("fakat"), norm("lakin"), norm("ancak")}
-BUT_WEIGHT = 1.1
+BUT_WEIGHT = 1.4  # ama sonrası ağırlık (1.2–1.8 arası deneyebilirsin)
 
+# Ek intensifier katmanı
 INTENSIFIERS = {
     norm("çok"): 1.5,
     norm("cok"): 1.5,
@@ -72,55 +75,49 @@ INTENSIFIERS = {
     norm("biraz"): 0.6,
 }
 
+# Skor sınırı (UI/rapor için stabil)
 SCORE_CLIP = 10.0
 
 
-def apply_rules(
-    value: float,
-    boost_next: float,
-    hic_asla_active: bool,
-    hic_asla_strength: float,
-    but_active: bool,
-) -> Tuple[float, float, bool]:
-    value *= boost_next
-    boost_next = 1.0
-
-    if hic_asla_active:
-        if value > 0:
-            value = -abs(value) * hic_asla_strength
-        else:
-            value *= hic_asla_strength
-        hic_asla_active = False
-
-    if but_active:
-        value *= BUT_WEIGHT
-
-    return value, boost_next, hic_asla_active
-
-
 def calculate_score(tokens: List[str], lex_mgr) -> float:
+    """
+    Skor hesaplama:
+    - Bigramlar öncelikli (harika_değil, fena_değil, tavsiye_etmem vb.) ve consume edilir (double-count yok).
+    - "hiç/asla" negatifi güçlendirir:
+        * pozitif katkıyı negatife çevirip güçlendirir
+        * negatif katkıyı daha da negatif yapar
+    - "ama/fakat/lakin/ancak" sonrası katkılar BUT_WEIGHT ile çarpılır.
+    - "ne ... ne ..." (örn: ne iyi ne kötü) -> neutral (score=0)
+    - Skor en sonda [-SCORE_CLIP, +SCORE_CLIP] aralığına kırpılır.
+    """
+
     lexicon: Dict[str, float] = getattr(lex_mgr, "lexicon", {}) or {}
     bigram_lex: Dict[str, float] = getattr(lex_mgr, "bigrams", {}) or {}
     multipliers_up: Dict[str, float] = getattr(lex_mgr, "multipliers_up", {}) or {}
     multipliers_down: Dict[str, float] = getattr(lex_mgr, "multipliers_down", {}) or {}
 
+    # normalize keys
     lexicon = {norm(k): float(v) for k, v in lexicon.items()}
     bigram_lex = {norm(k): float(v) for k, v in bigram_lex.items()}
     multipliers_up = {norm(k): float(v) for k, v in multipliers_up.items()}
     multipliers_down = {norm(k): float(v) for k, v in multipliers_down.items()}
 
+    # unigram akışı
     uni = [norm(t) for t in tokens if "_" not in str(t)]
 
+    # --- "ne ... ne ..." kalıbı (örn: ne iyi ne kötü) -> neutral ---
     if uni.count("ne") >= 2:
-        has_good = any(x in uni for x in ["iyi", "güzel", "guzel", "harika", "mükemmel", "mukemmel"])
-        has_bad = any(x in uni for x in ["kötü", "kotu", "berbat", "rezalet", "fena"])
+        has_good = "iyi" in uni
+        has_bad = ("kötü" in uni) or ("kotu" in uni)
         if has_good and has_bad:
             return 0.0
 
     score = 0.0
     boost_next = 1.0
+
     hic_asla_active = False
-    hic_asla_strength = 1.4
+    hic_asla_strength = 1.4  # 1.3–1.6 arası iyi
+
     but_active = False
 
     i = 0
@@ -155,22 +152,22 @@ def calculate_score(tokens: List[str], lex_mgr) -> float:
             but_active = True
             i += 1
             continue
-        
+
+        # multiplier/intensifier
         if tok in multipliers_up:
             boost_next *= multipliers_up[tok]
             i += 1
             continue
-
         if tok in multipliers_down:
             boost_next *= multipliers_down[tok]
             i += 1
             continue
-
         if tok in INTENSIFIERS:
             boost_next *= INTENSIFIERS[tok]
             i += 1
             continue
-        
+
+        # hiç/asla => negatifi güçlendir
         if tok in HIC_ASLA_WORDS:
             hic_asla_active = True
             i += 1
@@ -183,14 +180,27 @@ def calculate_score(tokens: List[str], lex_mgr) -> float:
 
         base = float(lexicon.get(tok, 0.0))
         if base != 0.0:
-            added, boost_next, hic_asla_active = apply_rules(
-                base, boost_next, hic_asla_active, hic_asla_strength, but_active
-            )
+            added = base * boost_next
+            boost_next = 1.0
+
+            if hic_asla_active:
+                if added > 0:
+                    added = -abs(added) * hic_asla_strength
+                else:
+                    added = added * hic_asla_strength
+                hic_asla_active = False
+
+            if but_active:
+                added *= BUT_WEIGHT
+
             score += added
 
         i += 1
 
-    score = max(-SCORE_CLIP, min(SCORE_CLIP, score))
+    # score'u uçmasın diye kırp
+    if SCORE_CLIP is not None:
+        score = max(-SCORE_CLIP, min(SCORE_CLIP, score))
+
     return score
 
 
@@ -221,21 +231,12 @@ def predict_sentiment(text: str, lex_mgr) -> Tuple[str, float, List[str]]:
 def main():
     lex_mgr = load_lexicon()
 
-    print("DEBUG güzel_değil:", lex_mgr.bigrams.get("güzel_değil"))
-    print("DEBUG iyi_değil:", lex_mgr.bigrams.get("iyi_değil"))
-    print("DEBUG kötü_değil:", lex_mgr.bigrams.get("kötü_değil"))
-    print("DEBUG fena_değil:", lex_mgr.bigrams.get("fena_değil"))
-
     examples = [
         "Yemek çok güzel ama servis rezalet.",
         "Manzara harika değil, hiç beğenmedim.",
         "Fiyatlar oldukça yüksek ama lezzet mükemmel.",
         "İyi değil, asla tavsiye etmem.",
         "Kötü değil aslında fena değil.",
-        "Güzel değil.",
-        "Güzel değildi.",
-        "Harika değil.",
-        "Kötü değil.",
         "Ortalama, idare eder.",
         "Ne iyi ne kötü.",
         "Ne harika ne berbat.",
