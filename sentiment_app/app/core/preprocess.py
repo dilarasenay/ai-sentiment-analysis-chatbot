@@ -33,6 +33,7 @@ def clean_text(text):
     tokens = text.split()
     tokens = [w for w in tokens if w not in STOPWORDS]
     tokens = [strip_suffix(w) for w in tokens]
+    tokens = [strip_suffix(w) for w in tokens]
 
     if GENERATE_BIGRAMS and len(tokens) >= 2:
         bigrams = [f"{tokens[i]}_{tokens[i+1]}" for i in range(len(tokens) - 1)]
@@ -40,6 +41,12 @@ def clean_text(text):
 
     return tokens
 
+def strip_suffix(word):
+    suffixes = ["ydi","ydı","ydü","ydu","di","dı","dü","du","ti","tı","tu","tü"]
+    for s in suffixes:
+        if word.endswith(s) and len(word) > len(s) + 2:
+            return word[:-len(s)]
+    return word
 def strip_suffix(word):
     suffixes = ["ydi","ydı","ydü","ydu","di","dı","dü","du","ti","tı","tu","tü"]
     for s in suffixes:
@@ -96,9 +103,6 @@ def main():
 
     print("\n--- Örnek (ilk 5 satır) ---")
     print(df[["Sentence", "Cleaned_Sentence"]].head())
-
-
-
     
     # Kaydetme
     df["Final_Cleaned_Text"] = df["Cleaned_Sentence"].apply(lambda x: " ".join(x))

@@ -6,6 +6,44 @@ from typing import Dict, List, Tuple
 from .preprocess import preprocess_text
 from .lexicon import load_lexicon
 
+import google.generativeai as genai
+
+# API anahtarını buraya giriyorsun
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
+genai.configure(api_key=GEMINI_API_KEY)
+
+# Hızlı ve ucuz olan flash modelini seçiyoruz
+model = genai.GenerativeModel('gemini-3-flash-preview')
+
+def get_llm_sentiment(text: str) -> str:
+    """
+    Sadece Lexicon 'nötr' kaldığında devreye giren Gemini kurtarıcısı.
+    """
+    prompt = f"""
+    Sen uzman bir gıda gurmesi ve duygu analistisin. 
+    Aşağıdaki müşteri yorumunun duygusunu analiz et. 
+    Cevabın SADECE şu üç kelimeden biri olmak ZORUNDADIR: 'positive', 'negative', veya 'neutral'.
+    Açıklama yapma, nokta koyma.
+    
+    Müşteri Yorumu: "{text}"
+    """
+    
+    try:
+        response = model.generate_content(prompt)
+        # Gelen cevabı küçük harfe çevirip etrafındaki boşlukları siliyoruz (garanti olsun diye)
+        llm_karari = response.text.strip().lower()
+        
+        # Eğer model kafasına göre başka bir şey yazdıysa güvenliğe al
+        if llm_karari in ['positive', 'negative']:
+            return llm_karari
+        else:
+            return 'neutral'
+            
+    except Exception as e:
+        # İnternet koparsa veya API limiti dolarsa sistem çökmesin, nötr dönsün
+        print(f"Gemini API Hatası: {e}")
+        return 'neutral'
+
 print("✅ RUNNING FILE:", __file__)
 
 
@@ -89,11 +127,35 @@ def calculate_score(tokens: List[str], lex_mgr) -> float:
     while i < len(uni):
         tok = uni[i]
 
+        # BIGRAM FIRST (consume) - Fix: check before unigram multipliers
+        if i + 1 < len(uni):
+            bi = norm(f"{uni[i]}_{uni[i+1]}")
+            bi_score = float(bigram_lex.get(bi, 0.0))
+            if bi_score != 0.0:
+                added = bi_score * boost_next
+                boost_next = 1.0
+
+                if hic_asla_active:
+                    # pozitif -> negatif + güç, negatif -> daha negatif
+                    if added > 0:
+                        added = -abs(added) * hic_asla_strength
+                    else:
+                        added = added * hic_asla_strength
+                    hic_asla_active = False
+
+                if but_active:
+                    added *= BUT_WEIGHT
+
+                score += added
+                i += 2
+                continue
+
+        # "ama/fakat" sonrası ağırlık
         if tok in BUT_WORDS:
             but_active = True
             i += 1
             continue
-
+        
         if tok in multipliers_up:
             boost_next *= multipliers_up[tok]
             i += 1
@@ -108,48 +170,17 @@ def calculate_score(tokens: List[str], lex_mgr) -> float:
             boost_next *= INTENSIFIERS[tok]
             i += 1
             continue
-
+        
         if tok in HIC_ASLA_WORDS:
             hic_asla_active = True
             i += 1
             continue
 
-        # 1) ÖNCE negation pattern: kelime + değil
-        if i + 1 < len(uni) and uni[i + 1] in DEGIL_WORDS:
-            phrase = norm(f"{tok}_değil")
-
-            if phrase in bigram_lex:
-                added = bigram_lex[phrase]
-            else:
-                base = float(lexicon.get(tok, 0.0))
-                if base > 0:
-                    added = -abs(base)
-                elif base < 0:
-                    added = abs(base) * 0.5
-                else:
-                    added = 0.0
-
-            added, boost_next, hic_asla_active = apply_rules(
-                added, boost_next, hic_asla_active, hic_asla_strength, but_active
-            )
-
-            score += added
-            i += 2
+        # unigram "değil" (bigram yakalanmadıysa nötr geç)
+        if tok in DEGIL_WORDS:
+            i += 1
             continue
 
-        # 2) Sonra normal özel bigram
-        if i + 1 < len(uni):
-            bi = norm(f"{uni[i]}_{uni[i + 1]}")
-            if bi in bigram_lex:
-                added = bigram_lex[bi]
-                added, boost_next, hic_asla_active = apply_rules(
-                    added, boost_next, hic_asla_active, hic_asla_strength, but_active
-                )
-                score += added
-                i += 2
-                continue
-
-        # 3) Sonra unigram
         base = float(lexicon.get(tok, 0.0))
         if base != 0.0:
             added, boost_next, hic_asla_active = apply_rules(
@@ -175,8 +206,17 @@ def predict_sentiment(text: str, lex_mgr) -> Tuple[str, float, List[str]]:
     tokens = preprocess_text(text)
     score = calculate_score(tokens, lex_mgr)
     label = classify(score)
+    
+    # LLM Fallback: If lexicon is neutral, ask Gemini
+    if label == "neutral":
+        print(f"Lexicon nötr kaldı, Gemini'a soruluyor: {text}")
+        llm_label = get_llm_sentiment(text)
+        if llm_label != "neutral":
+            label = llm_label
+            # Assign a representative score for the UI if Gemini detects emotion
+            score = 5.0 if label == "positive" else -5.0
+            
     return label, score, tokens
-
 
 def main():
     lex_mgr = load_lexicon()
