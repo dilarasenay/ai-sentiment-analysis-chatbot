@@ -9,11 +9,11 @@ from .lexicon import load_lexicon
 import google.generativeai as genai
 
 # API anahtarını buraya giriyorsun
-GEMINI_API_KEY = "YOUR_API_KEY"
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Hızlı ve ucuz olan flash modelini seçiyoruz
-model = genai.GenerativeModel('gemini-3-flash-preview')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 def get_llm_sentiment(text: str) -> str:
     """
